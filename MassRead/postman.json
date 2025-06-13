@@ -1,0 +1,354 @@
+{
+	"info": {
+		"_postman_id": "mass-edas-api-v1-0-0",
+		"name": "MASS EDAŞ API Servisi - v1.0.0 (Geliştirme Ortamı)",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "YOUR_EXPORTER_ID_HERE",
+		"description": "MASS Projesi için EDAŞ API Mikroservisinin geliştirme ortamı endpointleri. Bu koleksiyon API Key doğrulamayı ve temel servis çağrılarını içerir."
+	},
+	"item": [
+		{
+			"name": "Genel Servisler",
+			"item": [
+				{
+					"name": "Get API Versions",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-Request-ID",
+								"value": "{{$guid}}",
+								"type": "text",
+								"description": "Her istek için benzersiz bir ID"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{$guid}}",
+								"type": "text",
+								"description": "İstek zincirini izlemek için korelasyon ID"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/versions",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"versions"
+							]
+						},
+						"description": "Servisin desteklediği API versiyonlarının listesini döndürür. API Key gerektirmez."
+					},
+					"response": [
+						{
+							"name": "Success Response (200 OK)",
+							"originalRequest": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/versions",
+									"host": [
+										"{{baseUrl}}"
+									],
+									"path": [
+										"versions"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n  \"status\": 200,\n  \"correlationId\": \"UUIDv4\",\n  \"spanIds\": \"(edas-massread-service)-get-versions-success\",\n  \"successMessage\": null,\n  \"errors\": null,\n  \"body\": [\n    \"v1\"\n  ]\n}"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "Abonelik Servisleri",
+			"item": [
+				{
+					"name": "Check Subscription (Abonelik Kontrolü)",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"// Bu endpoint için Authorization header gereklidir (API Key)."
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-Request-ID",
+								"value": "{{$guid}}",
+								"type": "text",
+								"description": "Her istek için benzersiz bir ID"
+							},
+							{
+								"key": "X-Correlation-ID",
+								"value": "{{$guid}}",
+								"type": "text",
+								"description": "İstek zincirini izlemek için korelasyon ID"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{apiKey}}",
+								"type": "text",
+								"description": "EDAŞ tarafından sağlanan API Key (örn: Bearer YOUR_API_KEY_HERE). `apiKey` değişkeni olarak ayarlanmalıdır."
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"installationNumber\": \"0488135000\",\n  \"type\": \"individual-consumption\",\n  \"tckn\": \"12345678901\" ,\n  \"vkn\": \"6570105422\" \n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/subscription/check",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"subscription",
+								"check"
+							]
+						},
+						"description": "Abonelik kontrol endpointi. Kullanıcının abonelik bilgilerini doğrulayarak başarılı olması durumunda `subscriptionKey` döndürür. Bu endpoint API Key doğrulaması gerektirir."
+					},
+					"response": [
+						{
+							"name": "Success Response (200 OK)",
+							"originalRequest": {
+								"method": "POST",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/subscription/check",
+									"host": [
+										"{{baseUrl}}"
+									],
+									"path": [
+										"subscription",
+										"check"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n  \"status\": 200,\n  \"correlationId\": \"UUIDv4\",\n  \"spanIds\": \"(edas-massread-service)-sub-check-success\",\n  \"successMessage\": \"Abonelik başarıyla doğrulandı.\",\n  \"errors\": null,\n  \"body\": {\n    \"valid\": true,\n    \"subscriptionKey\": \"550e8400-e29b-41d4-a716-446655440000\", // Örnek UUID\n    \"type\": \"individual-consumption\",\n    \"startDate\": \"2024-12-11T11:00:00.000Z\"\n  }\n}"
+						},
+						{
+							"name": "Error Response (401 Unauthorized)",
+							"originalRequest": {
+								"method": "POST",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/subscription/check",
+									"host": [
+										"{{baseUrl}}"
+									],
+									"path": [
+										"subscription",
+										"check"
+									]
+								}
+							},
+							"status": "Unauthorized",
+							"code": 401,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n  \"status\": 401,\n  \"correlationId\": \"UUIDv4\",\n  \"errors\": [\n    {\n      \"errorCode\": \"(EDAS)auth-401\",\n      \"errorMessage\": \"Yetkilendirme başlığı (Authorization header) eksik.\"\n    }\n  ],\n  \"body\": null\n}"
+						},
+						{
+							"name": "Error Response (403 Forbidden)",
+							"originalRequest": {
+								"method": "POST",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/subscription/check",
+									"host": [
+										"{{baseUrl}}"
+									],
+									"path": [
+										"subscription",
+										"check"
+									]
+								}
+							},
+							"status": "Forbidden",
+							"code": 403,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n  \"status\": 403,\n  \"correlationId\": \"UUIDv4\",\n  \"errors\": [\n    {\n      \"errorCode\": \"(EDAS)auth-403\",\n      \"errorMessage\": \"Geçersiz API Anahtarı.\"\n    }\n  ],\n  \"body\": null\n}"
+						},
+						{
+							"name": "Error Response (422 Unprocessable Entity - Validation Error)",
+							"originalRequest": {
+								"method": "POST",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/subscription/check",
+									"host": [
+										"{{baseUrl}}"
+									],
+									"path": [
+										"subscription",
+										"check"
+									]
+								}
+							},
+							"status": "Unprocessable Entity",
+							"code": 422,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n  \"status\": 422,\n  \"correlationId\": \"UUIDv4\",\n  \"errors\": [\n    {\n      \"errorCode\": \"(EDAS)validation-422\",\n      \"errorMessage\": \"Eksik veya geçersiz parametreler: installationNumber, type ve (tckn veya vkn) zorunludur.\"\n    }\n  ],\n  \"body\": null\n}"
+						},
+						{
+							"name": "Error Response (404 Not Found - Abonelik Eşleşmedi)",
+							"originalRequest": {
+								"method": "POST",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/subscription/check",
+									"host": [
+										"{{baseUrl}}"
+									],
+									"path": [
+										"subscription",
+										"check"
+									]
+								}
+							},
+							"status": "Not Found",
+							"code": 404,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n  \"status\": 404,\n  \"correlationId\": \"UUIDv4\",\n  \"errors\": [\n    {\n      \"errorCode\": \"(EDAS)subscription-404\",\n      \"errorMessage\": \"İlgili tüketim/üretim tesisi mevcut değil veya abonelik bilgileri eşleşmedi.\"\n    }\n  ],\n  \"body\": {\n    \"valid\": false\n  }\n}"
+						},
+						{
+							"name": "Error Response (500 Internal Server Error)",
+							"originalRequest": {
+								"method": "POST",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/subscription/check",
+									"host": [
+										"{{baseUrl}}"
+									],
+									"path": [
+										"subscription",
+										"check"
+									]
+								}
+							},
+							"status": "Internal Server Error",
+							"code": 500,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n  \"status\": 500,\n  \"correlationId\": \"UUIDv4\",\n  \"errors\": [\n    {\n      \"errorCode\": \"(EDAS)server-internal-error\",\n      \"errorMessage\": \"Dahili sunucu hatası.\"\n    }\n  ],\n  \"body\": null\n}"
+						},
+						{
+							"name": "Error Response (522 Connection Timeout / Bad Gateway)",
+							"originalRequest": {
+								"method": "POST",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/subscription/check",
+									"host": [
+										"{{baseUrl}}"
+									],
+									"path": [
+										"subscription",
+										"check"
+									]
+								}
+							},
+							"status": "Connection Timed Out",
+							"code": 522,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n  \"status\": 522,\n  \"correlationId\": \"UUIDv4\",\n  \"errors\": [\n    {\n      \"errorCode\": \"(EDAS)ccb-timeout-522\",\n      \"errorMessage\": \"CCB servisine ulaşılamıyor veya yanıt zaman aşımına uğradı.\"\n    }\n  ],\n  \"body\": null\n}"
+						}
+					]
+				}
+			]
+		}
+	],
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://10.41.64.57:8976/api/v1",
+			"type": "string",
+			"description": "MASS EDAŞ API Mikroservisinin temel URL'i. Docker sunucusundaki IP ve port."
+		},
+		{
+			"key": "apiKey",
+			"value": "YOUR_API_KEY_HERE",
+			"type": "string",
+			"description": "api_key_manager.js script'i ile üretilen ve EPİAŞ'a elden teslim edilen geçerli API Key. 'Bearer ' ön eki olmadan sadece key değerini buraya yapıştırın."
+		}
+	]
+}
