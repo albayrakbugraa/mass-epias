@@ -16,7 +16,7 @@ app.use(apiKeyAuth); // tüm /api/v1/... endpointlerine uygular
 app.use(responseMiddleware);
 
 
-app.use('/api/v1/subscription', require('./routes/subscriptionCheck'));
+app.use('/api/v1/subscription', require('./routes/subscription'));
 app.use('/api/v1/versions', require('./routes/version'));
 app.use('/api/v1/readings', require('./routes/readings'));
 app.use('/api/v1/alerts', require('./routes/alerts'));

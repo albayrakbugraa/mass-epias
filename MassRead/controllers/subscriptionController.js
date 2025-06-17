@@ -9,9 +9,11 @@ const xmlParser = new xml2js.Parser({
   ignoreAttrs: true,
 });
 
-async function handleSubscriptionCheck(req, res) {
+//7.4 POST /subscription/check
+exports.checkSubscription = async (req, res) => {
   const correlationId = req.headers["x-correlation-id"] || uuidv4();
   logger.info("[POST /subscription/check] Talep alındı.", { correlationId });
+  const spanId = "(MassRead)" + uuidv4();
 
   const { installationNumber, type, tckn, vkn } = req.body;
 
@@ -19,8 +21,9 @@ async function handleSubscriptionCheck(req, res) {
     logger.warn("[POST /subscription/check] Geçersiz istek. Eksik parametre.", {
       correlationId,
     });
-    return res.status(422).json({
+    return res.sendResponse({
       status: 422,
+      spanIds: spanId,
       correlationId,
       errors: [
         {
@@ -56,24 +59,18 @@ async function handleSubscriptionCheck(req, res) {
       "[POST /subscription/check] CCB yanıtı alındı. Parse ediliyor...",
       { correlationId }
     );
-    const parsedResponse = await xmlParser.parseStringPromise(ccbRawResponse);
 
-    const responseBody =
-      parsedResponse["soapenv:Envelope"]?.["soapenv:Body"]?.CMSUBSCHECK
-        ?.subscriptionCheckResponse;
-    if (!responseBody) {
-      logger.error(
-        "[POST /subscription/check] Yanıt formatı beklenenden farklı.",
-        { correlationId }
-      );
-      throw new Error("CCB yanıtı beklenen formatta değil");
-    }
+    const parsed = await ccbService.parseSubscriptionCheckResponse(
+      ccbRawResponse
+    );
 
-    if (responseBody.valid === "true") {
+    
+    if (parsed.valid) {
       logger.info(
         "[POST /subscription/check] Abonelik geçerli. DB kaydı başlıyor...",
         { correlationId }
       );
+
       await subscriptionService.saveSubscription({
         subscriptionKey: responseBody.subscriptionKey,
         installationNumber,
@@ -86,10 +83,11 @@ async function handleSubscriptionCheck(req, res) {
       logger.info("[POST /subscription/check] Abonelik başarıyla kaydedildi.", {
         correlationId,
       });
-      return res.status(200).json({
+
+      return res.sendResponse({
         status: 200,
+        spanIds: spanId,
         correlationId,
-        spanIds: "(edas-massread-service)-sub-check-success",
         successMessage: "Abonelik başarıyla doğrulandı.",
         body: {
           valid: true,
@@ -102,8 +100,10 @@ async function handleSubscriptionCheck(req, res) {
       logger.warn("[POST /subscription/check] Abonelik doğrulanamadı.", {
         correlationId,
       });
-      return res.status(404).json({
+
+      return res.sendResponse({
         status: 404,
+        spanIds: spanId,
         correlationId,
         errors: [
           {
@@ -121,8 +121,10 @@ async function handleSubscriptionCheck(req, res) {
       correlationId,
       errorMessage: err.message,
     });
-    return res.status(500).json({
+
+    return res.sendResponse({
       status: 500,
+      spanIds: spanId,
       correlationId,
       errors: [
         {
@@ -132,8 +134,313 @@ async function handleSubscriptionCheck(req, res) {
       ],
     });
   }
-}
+};
 
-module.exports = {
-  handleSubscriptionCheck,
+//7.5 GET /subscription/{subscriptionKey}
+exports.getSubscriptionDetails = async (req, res) => {
+  const correlationId = req.headers["x-correlation-id"] || uuidv4();
+  const requestId = req.headers["x-request-id"] || uuidv4();
+  const spanId = "(MassRead)" + uuidv4();
+
+  const subscriptionKey = req.params.subscriptionKey;
+
+  logger.info("[GET /subscription/:subscriptionKey] İstek alındı", {
+    correlationId,
+    requestId,
+    subscriptionKey,
+  });
+
+  if (!subscriptionKey) {
+    return res.sendResponse({
+      status: 422,
+      spanIds: spanId,
+      correlationId,
+      errors: [
+        {
+          errorCode: "(EDAS)validation-422",
+          errorMessage: "subscriptionKey parametresi zorunludur.",
+        },
+      ],
+    });
+  }
+
+  try {
+    logger.info("[GET /subscription/:subscriptionKey] XML oluşturuluyor", {
+      correlationId,
+    });
+
+    const xmlRequest = ccbService.buildSubscriptionKeyQueryXml(subscriptionKey);
+
+    const rawXml = await ccbService.callCcb(xmlRequest, correlationId, "key");
+
+    const parsed = await ccbService.parseSubscriptionKeyResponse(rawXml);
+
+    logger.info("[GET /subscription/:subscriptionKey] Yanıt parse edildi", {
+      correlationId,
+    });
+
+    return res.sendResponse({
+      status: 200,
+      spanIds: spanId,
+      correlationId,
+      body: {
+        subscriptionDetails: {
+          startDate: parsed.startDate,
+          type: parsed.type,
+          address: parsed.address,
+          installationNumber: parsed.installationNumber,
+          etsoCode: parsed.etsoCode,
+          contractAccountNumber: parsed.contractAccountNumber,
+        },
+        notificationDetails: {
+          unexpectedUsageThreshold: parsed.unexpectedUsageThreshold,
+          usageLimitThreshold: parsed.usageLimitThreshold,
+        },
+        consumerDetails: {
+          consumerGroup: parsed.consumerGroup,
+          consumerClass: parsed.consumerClass,
+        },
+      },
+    });
+  } catch (err) {
+    logger.error("[GET /subscription/:subscriptionKey] Hata oluştu", {
+      correlationId,
+      errorMessage: err.message,
+    });
+
+    return res.sendResponse({
+      status: 500,
+      spanIds: spanId,
+      correlationId,
+      errors: [
+        {
+          errorCode: "(EDAS)ccb-error",
+          errorMessage: err.message || "Bilinmeyen hata",
+        },
+      ],
+    });
+  }
+};
+
+//7.8 PUT /subscription/{subscriptionKey}/usage-limit-threshold
+exports.updateUsageLimitThreshold = async (req, res) => {
+  const correlationId = req.headers["x-correlation-id"] || uuidv4();
+  const spanId = "(MassRead)" + uuidv4();
+  const subscriptionKey = req.params.subscriptionKey;
+  const { threshold } = req.body;
+
+  logger.info("[PUT /subscription/:subscriptionKey/usage-limit-threshold] İstek alındı", {
+    correlationId,
+    subscriptionKey,
+    threshold
+  });
+
+  if (!subscriptionKey || typeof threshold !== "number") {
+    return res.sendResponse({
+      status: 422,
+      spanIds: spanId,
+      correlationId,
+      errors: [
+        {
+          errorCode: "(EDAS)validation-422",
+          errorMessage: "subscriptionKey ve numeric threshold zorunludur."
+        }
+      ]
+    });
+  }
+
+  try {
+    const requestXml = ccbService.buildUsageLimitThresholdXml(subscriptionKey, threshold);
+    const responseXml = await ccbService.callCcb(requestXml, correlationId, "key");
+    const result = await ccbService.parseUsageLimitThresholdResponse(responseXml);
+
+    if (result.status === "success" && result.responseCode === "200") {
+      logger.info("[PUT /usage-limit-threshold] Eşik başarıyla güncellendi", { correlationId });
+
+      return res.sendResponse({
+        status: 200,
+        spanIds: spanId,
+        correlationId,
+        successMessage: "Eşik değer başarıyla güncellendi.",
+        body: { status: "success" }
+      });
+    } else {
+      logger.warn("[PUT /usage-limit-threshold] CCB'den olumsuz yanıt alındı", { correlationId });
+
+      return res.sendResponse({
+        status: 500,
+        spanIds: spanId,
+        correlationId,
+        errors: [
+          {
+            errorCode: "(EDAS)ccb-failed",
+            errorMessage: "Threshold güncellemesi başarısız oldu."
+          }
+        ]
+      });
+    }
+  } catch (err) {
+    logger.error("[PUT /usage-limit-threshold] Hata", {
+      correlationId,
+      errorMessage: err.message
+    });
+
+    return res.sendResponse({
+      status: 500,
+      spanIds: spanId,
+      correlationId,
+      errors: [
+        {
+          errorCode: "(EDAS)internal-error",
+          errorMessage: err.message || "Bilinmeyen hata"
+        }
+      ]
+    });
+  }
+};
+
+//7.9 PUT /subscription/{subscriptionKey}/unexpected-usage-threshold
+exports.updateUnexpectedUsageThreshold = async (req, res) => {
+  const correlationId = req.headers["x-correlation-id"] || uuidv4();
+  const spanId = "(MassRead)" + uuidv4();
+  const subscriptionKey = req.params.subscriptionKey;
+  const { threshold } = req.body;
+
+  logger.info("[PUT /subscription/:subscriptionKey/unexpected-usage-threshold] İstek alındı", {
+    correlationId,
+    subscriptionKey,
+    threshold
+  });
+
+  if (!subscriptionKey || typeof threshold !== "number") {
+    return res.sendResponse({
+      status: 422,
+      spanIds: spanId,
+      correlationId,
+      errors: [
+        {
+          errorCode: "(EDAS)validation-422",
+          errorMessage: "subscriptionKey ve numeric threshold zorunludur."
+        }
+      ]
+    });
+  }
+
+  try {
+    const requestXml = ccbService.buildUnexpectedUsageThresholdXml(subscriptionKey, threshold);
+    const responseXml = await ccbService.callCcb(requestXml, correlationId, "key");
+    const result = await ccbService.parseUnexpectedUsageThresholdResponse(responseXml);
+
+    if (result.status === "success" && result.responseCode === "200") {
+      logger.info("[PUT /unexpected-usage-threshold] Eşik başarıyla güncellendi", { correlationId });
+
+      return res.sendResponse({
+        status: 200,
+        spanIds: spanId,
+        correlationId,
+        successMessage: "Eşik değer başarıyla güncellendi.",
+        body: { status: "success" }
+      });
+    } else {
+      logger.warn("[PUT /unexpected-usage-threshold] CCB olumsuz yanıt", { correlationId });
+
+      return res.sendResponse({
+        status: 500,
+        spanIds: spanId,
+        correlationId,
+        errors: [
+          {
+            errorCode: "(EDAS)ccb-failed",
+            errorMessage: "Beklenmedik tüketim eşiği güncellemesi başarısız."
+          }
+        ]
+      });
+    }
+  } catch (err) {
+    logger.error("[PUT /unexpected-usage-threshold] Hata", {
+      correlationId,
+      errorMessage: err.message
+    });
+
+    return res.sendResponse({
+      status: 500,
+      spanIds: spanId,
+      correlationId,
+      errors: [
+        {
+          errorCode: "(EDAS)internal-error",
+          errorMessage: err.message || "Bilinmeyen hata"
+        }
+      ]
+    });
+  }
+};
+
+//7.10 DELETE /subscription/{subscriptionKey}
+exports.deleteSubscription = async (req, res) => {
+  const correlationId = req.headers["x-correlation-id"] || uuidv4();
+  const spanId = "(MassRead)" + uuidv4();
+  const subscriptionKey = req.params.subscriptionKey;
+
+  logger.info("[DELETE /subscription/:subscriptionKey] İstek alındı", {
+    correlationId,
+    subscriptionKey
+  });
+
+  if (!subscriptionKey) {
+    return res.sendResponse({
+      status: 422,
+      spanIds: spanId,
+      correlationId,
+      errors: [{
+        errorCode: "(EDAS)validation-422",
+        errorMessage: "subscriptionKey parametresi zorunludur."
+      }]
+    });
+  }
+
+  try {
+    const requestXml = ccbService.buildSubscriptionDeleteXml(subscriptionKey);
+    const responseXml = await ccbService.callCcb(requestXml, correlationId, "key");
+    const result = await ccbService.parseSubscriptionDeleteResponse(responseXml);
+
+    if (result.status === "success" && result.responseCode === "200") {
+      logger.info("[DELETE /subscription] Abonelik başarıyla silindi", { correlationId });
+
+      return res.sendResponse({
+        status: 200,
+        spanIds: spanId,
+        correlationId,
+        successMessage: "Abonelik başarıyla silindi.",
+        body: { status: "success" }
+      });
+    } else {
+      logger.warn("[DELETE /subscription] CCB'den başarısız yanıt", { correlationId });
+
+      return res.sendResponse({
+        status: 500,
+        spanIds: spanId,
+        correlationId,
+        errors: [{
+          errorCode: "(EDAS)ccb-failed",
+          errorMessage: "Abonelik silinemedi."
+        }]
+      });
+    }
+  } catch (err) {
+    logger.error("[DELETE /subscription] Hata", {
+      correlationId,
+      errorMessage: err.message
+    });
+
+    return res.sendResponse({
+      status: 500,
+      spanIds: spanId,
+      correlationId,
+      errors: [{
+        errorCode: "(EDAS)internal-error",
+        errorMessage: err.message || "Bilinmeyen hata"
+      }]
+    });
+  }
 };
