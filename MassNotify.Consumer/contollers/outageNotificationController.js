@@ -1,6 +1,8 @@
 const { sendNotificationToEpias } = require("../services/notificationSender");
 
 /**
+ * !!! İLERİDE DÜZENLENECEK ÖRNEK OLARAK YAPILDI. !!!
+ * 
  * Planlı veya plansız kesinti bildirimi gönderir.
  * POST /api/v1/notifications/outage-notification
  * Body: {

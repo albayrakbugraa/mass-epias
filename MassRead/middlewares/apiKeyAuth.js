@@ -1,8 +1,18 @@
+/*
 const db = require('../Libs/db');
 const mLib = require('../Libs/Ala00Lib');
 const { hashData } = require('../utils/hashUtil');
 const { v4: uuidv4 } = require('uuid');
+*/
 
+const axios = require("axios");
+const { v4: uuidv4 } = require("uuid");
+const logger = require("../utils/logger");
+const { hashData } = require("../utils/hashUtil");
+
+const MASS_DB_SRVC_URL = process.env.MASS_DB_SRVC_URL;
+
+/*
 module.exports = async (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const correlationId = req.headers['x-correlation-id'] || uuidv4();
@@ -15,7 +25,7 @@ module.exports = async (req, res, next) => {
             status: 401,
             correlationId,
             errors: [{
-                errorCode: '(EDAS)auth-401',
+                errorCode: '(MassRead)auth-401',
                 errorMessage: 'Authorization header eksik veya geçersiz'
             }]
         });
@@ -45,7 +55,7 @@ module.exports = async (req, res, next) => {
                 status: 403,
                 correlationId,
                 errors: [{
-                    errorCode: '(EDAS)auth-403',
+                    errorCode: '(MassRead)auth-403',
                     errorMessage: 'API Key geçersiz'
                 }]
             });
@@ -57,7 +67,7 @@ module.exports = async (req, res, next) => {
                 status: 403,
                 correlationId,
                 errors: [{
-                    errorCode: '(EDAS)auth-403',
+                    errorCode: '(MassRead)auth-403',
                     errorMessage: 'API Key pasif'
                 }]
             });
@@ -76,7 +86,7 @@ module.exports = async (req, res, next) => {
             status: 500,
             correlationId,
             errors: [{
-                errorCode: '(EDAS)db-auth-error-500',
+                errorCode: '(MassRead)db-auth-error-500',
                 errorMessage: 'DB hatası'
             }]
         });
@@ -89,4 +99,83 @@ module.exports = async (req, res, next) => {
             }
         }
     }
+};
+*/
+
+module.exports = async (req, res, next) => {
+  const authHeader = req.headers["authorization"];
+  const correlationId = req.headers["x-correlation-id"] || uuidv4();
+
+  logger.info(`[AUTH] Doğrulama başladı. CID: ${correlationId}`);
+
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    logger.warn(
+      `[AUTH] Eksik veya hatalı Authorization header. CID: ${correlationId}`
+    );
+    return res.status(401).json({
+      status: 401,
+      correlationId,
+      errors: [
+        {
+          errorCode: "(MassRead)auth-401",
+          errorMessage: "Authorization header eksik veya geçersiz",
+        },
+      ],
+    });
+  }
+
+  const token = authHeader.split(" ")[1];
+  logger.info("[AUTH] Token alındı", {
+    correlationId,
+    tokenSample: token?.slice(0, 6) + "...",
+  });
+
+  try {
+    logger.info("[AUTH] MassDbSrvc'ye API key doğrulama isteği gönderiliyor", {
+      correlationId,
+      endpoint: `${MASS_DB_SRVC_URL}/auth/validate`,
+    });
+    const resp = await axios.post(
+      `${MASS_DB_SRVC_URL}/auth/validate`,
+      { token },
+      {
+        headers: { "x-correlation-id": correlationId },
+      }
+    );
+
+    if (resp.data && resp.data.valid) {
+      logger.info(`[AUTH] API Key doğrulandı. CID: ${correlationId}`);
+      next();
+    } else {
+      logger.warn(`[AUTH] API Key geçersiz/pasif. CID: ${correlationId}`);
+      return res.status(403).json({
+        status: 403,
+        correlationId,
+        errors: [
+          {
+            errorCode: "(MassRead)auth-403",
+            errorMessage: "API Key geçersiz veya pasif",
+          },
+        ],
+      });
+    }
+  } catch (err) {
+    logger.error("[AUTH] Doğrulama sırasında hata", {
+      correlationId,
+      errorMessage: err.message,
+      stack: err.stack,
+      response: err.response?.data,
+      status: err.response?.status,
+    });
+    return res.status(err.response?.status || 500).json({
+      status: err.response?.status || 500,
+      correlationId,
+      errors: [
+        {
+          errorCode: "(MassRead)auth-error",
+          errorMessage: err.response?.data?.error || err.message,
+        },
+      ],
+    });
+  }
 };

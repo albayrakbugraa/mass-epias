@@ -2,33 +2,57 @@ const mLib = require("../Libs/Ala00Lib");
 const { v4: uuidv4 } = require("uuid");
 const logger = require("../utils/logger");
 
+function generateTracing(req, label = "MassRead-Version") {
+  return {
+    correlationId: req.headers["x-correlation-id"] || uuidv4(),
+    requestId: req.headers["x-request-id"] || uuidv4(),
+    spanIds: `(${label})-${uuidv4()}`,
+  };
+}
+
+function logContext(event, tracing, extra = {}) {
+  return {
+    event,
+    ...tracing,
+    ...extra,
+  };
+}
+
+//7.3	GET /versions
 async function getVersions(req, res) {
   const supportedVersions = ["v1"];
-  const spanId = "(MassRead)" + uuidv4();
+  const event = "GET /versions";
+  const { requestId, ...safeTracing } = tracing;
 
   try {
-
-    logger.info("[GET /versions] Versiyon bilgisi döndürülüyor.", { correlationId });
+    logger.info(
+      "Versiyon bilgisi döndürülüyor.",
+      logContext(event, tracing, { version: supportedVersions })
+    );
 
     res.sendResponse({
       status: 200, // Sadece numeric code ver, middleware otomatik açıklama ekler
-      spanIds: spanId,
+      ...safeTracing,
       body: supportedVersions,
     });
   } catch (err) {
-    
-    logger.error("[GET /versions] Hata oluştu.", {
-      correlationId,
-      errorMessage: err.message,
-    });
+    logger.error(
+      "Versiyon hatası",
+      logContext(event, tracing, {
+        errorMessage: err.message,
+        stack: err.stack,
+        response: err.response?.data,
+        status: err.response?.status,
+      })
+    );
 
     res.sendResponse({
       status: 500,
-      spanIds: "(edas-massread-service)-get-versions-error",
+      ...safeTracing,
       errors: [
         {
-          errorCode: "(EDAS)server-internal-error",
-          errorMessage: "Dahili sunucu hatası oluştu.",
+          errorCode: "(MassRead)internal-error",
+          errorMessage: err.message || "Bilinmeyen hata oluştu",
         },
       ],
     });

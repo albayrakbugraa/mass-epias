@@ -1,5 +1,6 @@
 //Libs/db.js
 // nvm use v18.4.0;node api_key_manager.js
+require('dotenv').config(); 
 const oracledb = require('oracledb');
 var mLib = require('./Ala00Lib.js'); // mLib'i dahil et
 mLib.Owner = 'db.js'; // Loglarda bu modülün ismini görmek için
@@ -26,6 +27,8 @@ try {
     } else {
         // Diğer platformlar için de bir yol belirtilmeli veya otomatik bulunması sağlanmalı
         // Örneğin: oracledb.initOracleClient({libDir: process.env.ORACLE_CLIENT_LIB_DIR});
+        mLib.log("Oracle lib path:", process.env.ORACLE_CLIENT_LIB_DIR);
+        oracledb.initOracleClient({ libDir: process.env.ORACLE_CLIENT_LIB_DIR });
         mLib.log('Oracle Client init. (Non-Apple Silicon or default path)'); // mLib ile logla
     }
 } catch (err) {

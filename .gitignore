@@ -4,3 +4,6 @@
 /DontUseMassReadEx/node_modules
 /MassNotify.Consumer/node_modules
 /MassNotify.Poster/node_modules
+/MassFile/node_modules
+/MassDbSrvc/node_modules
+.vscode

@@ -1,67 +1,138 @@
-const db = require("../Libs/db");
-const mLib = require("../Libs/Ala00Lib");
+const axiosHelper = require("../utils/axiosHelper");
 
-// DB Config .env'den çekiliyor
-const dbConfig = {
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  connectString: process.env.DB_CONNECT_STRING,
-};
-
-/**
- * CCB'den gelen abonelik verisini veritabanına kaydeder/günceller.
- * @param {Object} data
- */
-async function saveSubscription(data) {
-  const { subscriptionKey, installationNumber, type, tckn, vkn, startDate } =
-    data;
-
-  let connection;
-
-  try {
-    connection = await db.getConnSimple(dbConfig);
-
-    await connection.execute(
-      `MERGE INTO MASS_SUBSCRIPTIONS D
-             USING (SELECT :subscriptionKey AS SUBS_KEY FROM DUAL) S
-             ON (D.SUBSCRIPTION_KEY = S.SUBS_KEY)
-             WHEN MATCHED THEN
-                 UPDATE SET LAST_CHECK_DATE = SYSTIMESTAMP, IS_ACTIVE = 1, TYPE = :type
-             WHEN NOT MATCHED THEN
-                 INSERT (SUBSCRIPTION_KEY, INSTALLATION_NUMBER, TYPE, TCKN, VKN, START_DATE, CREATED_AT, IS_ACTIVE)
-                 VALUES (:subscriptionKey, :installationNumber, :type, :tckn, :vkn, TO_TIMESTAMP_TZ(:startDate, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"'), SYSTIMESTAMP, 1)`,
-      {
-        subscriptionKey,
-        installationNumber,
-        type,
-        tckn,
-        vkn,
-        startDate,
-      },
-      { autoCommit: true }
-    );
-
-    logger.info("[DB] Abonelik kaydı güncellendi.", { subscriptionKey });
-  } catch (err) {
-    logger.error("[DB] Abonelik verisi kaydedilirken hata", {
-      subscriptionKey,
-      errorMessage: err.message,
-    });
-    throw err;
-  } finally {
-    if (connection) {
-      try {
-        await connection.close();
-      } catch (closeErr) {
-        logger.error("[DB] Bağlantı kapatılırken hata", {
-          subscriptionKey,
-          errorMessage: err.message,
-        });
-      }
-    }
-  }
+async function saveSubscriptionToDb(data, tracing) {
+  return axiosHelper.post(
+    `${process.env.MASS_DB_SRVC_URL}/subscription`,
+    data,
+    {},
+    tracing.correlationId,
+    tracing.requestId,
+    tracing.spanIds
+  );
 }
 
+async function updateSubscriptionDetails(data, tracing) {
+  return axiosHelper.put(
+    `${process.env.MASS_DB_SRVC_URL}/subscription/details`,
+    data,
+    {},
+    tracing.correlationId,
+    tracing.requestId,
+    tracing.spanIds
+  );
+}
+
+async function deactivateSubscription(subscriptionKey, tracing) {
+  return axiosHelper.put(
+    `${process.env.MASS_DB_SRVC_URL}/subscription/deactivate/${subscriptionKey}`,
+    {},
+    {},
+    tracing.correlationId,
+    tracing.requestId,
+    tracing.spanIds
+  );
+}
+
+async function getReadings(subscriptionKey, tracing) {
+  const url = `${process.env.MASS_DB_SRVC_URL}/subscription/${subscriptionKey}/readings`;
+  const response = await axiosHelper.get(
+    url,
+    {},
+    tracing.correlationId,
+    tracing.requestId,
+    tracing.spanIds
+  );
+  return response.data;
+}
+
+async function getYearlyCompensation(subscriptionKey, start, end, tracing) {
+  const url =
+    `${process.env.MASS_DB_SRVC_URL}/subscription/${subscriptionKey}/compensation/yearly` +
+    `?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`;
+  const response = await axiosHelper.get(
+    url,
+    {},
+    tracing.correlationId,
+    tracing.requestId,
+    tracing.spanIds
+  );
+  return response.data;
+}
+
+async function getExtendedCompensation(subscriptionKey, start, end, tracing) {
+  const url =
+    `${process.env.MASS_DB_SRVC_URL}/subscription/${subscriptionKey}/compensation/extended` +
+    `?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`;
+  const response = await axiosHelper.get(
+    url,
+    {},
+    tracing.correlationId,
+    tracing.requestId,
+    tracing.spanIds
+  );
+  return response.data;
+}
+
+async function getOutages(subscriptionKey, start, end, tracing) {
+  const url =
+    `${process.env.MASS_DB_SRVC_URL}/subscription/${subscriptionKey}/outages` +
+    `?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`;
+  const response = await axiosHelper.get(
+    url,
+    {},
+    tracing.correlationId,
+    tracing.requestId,
+    tracing.spanIds
+  );
+  return response.data;
+}
+
+async function getReportedOutages(subscriptionKey, start, end, tracing) {
+  const url =
+    `${process.env.MASS_DB_SRVC_URL}/subscription/${subscriptionKey}/reported-outages` +
+    `?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`;
+  const response = await axiosHelper.get(
+    url,
+    {},
+    tracing.correlationId,
+    tracing.requestId,
+    tracing.spanIds
+  );
+  return response.data;
+}
+
+async function updateUsageLimitInDb(subscriptionKey, threshold, tracing) {
+  return axiosHelper.put(
+    `${process.env.MASS_DB_SRVC_URL}/subscription/${subscriptionKey}/usage-limit-threshold`,
+    { threshold },
+    {},
+    tracing.correlationId,
+    tracing.requestId,
+    tracing.spanIds
+  );
+}
+
+async function updateUnexpectedUsageInDb(subscriptionKey, threshold, tracing) {
+  return axiosHelper.put(
+    `${process.env.MASS_DB_SRVC_URL}/subscription/${subscriptionKey}/unexpected-usage-threshold`,
+    { threshold },
+    {},
+    tracing.correlationId,
+    tracing.requestId,
+    tracing.spanIds
+  );
+}
+
+
 module.exports = {
-  saveSubscription,
+  saveSubscriptionToDb,
+  updateSubscriptionDetails,
+  deactivateSubscription,
+  getReadings,
+  getYearlyCompensation,
+  getExtendedCompensation,
+  getReportedOutages,
+  getOutages,
+  updateUsageLimitInDb,
+  updateUnexpectedUsageInDb
 };

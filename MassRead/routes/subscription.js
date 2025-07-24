@@ -17,4 +17,7 @@ router.put("/:subscriptionKey/unexpected-usage-threshold", controller.updateUnex
 //7.10 DELETE /subscription/{subscriptionKey}
 router.delete("/:subscriptionKey", controller.deleteSubscription);
 
+//7.7 GET /subscription/{subscriptionKey}/reported-outages 
+router.get("/:subscriptionKey/reported-outages", controller.getReportedOutages);
+
 module.exports = router;

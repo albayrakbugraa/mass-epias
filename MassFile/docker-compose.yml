@@ -1,0 +1,13 @@
+version: "3.8"
+
+services:
+  massfile:
+    build: .
+    container_name: massfile-service
+    ports:
+      - "8980:8980"
+    volumes:
+      - ./uploads:/usr/src/app/uploads  # Bind mount: dosyalar container dışında
+    env_file:
+      - .env
+    restart: always

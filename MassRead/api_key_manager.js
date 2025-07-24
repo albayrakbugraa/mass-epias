@@ -1,25 +1,26 @@
 // api_key_manager.js
 //nvm use v18.4.0;node api_key_manager.js
 
-require('dotenv').config(); // .env dosyasındaki değişkenleri yükle
+require("dotenv").config(); // .env dosyasındaki değişkenleri yükle
+const logger = require("./utils/logger.js");
 
-const crypto = require('crypto');
-const readline = require('readline');
-let db    = require('./Libs/db.js');
-const mLib = require('./Libs/Ala00Lib.js'); // Ala00Lib'i dahil et
-mLib.Owner = 'api_key_manager.js'; // Loglarda bu modülün ismini görmek için
+const crypto = require("crypto");
+const readline = require("readline");
+let db = require("./Libs/db.js");
+const mLib = require("./Libs/Ala00Lib.js"); // Ala00Lib'i dahil et
+mLib.Owner = "api_key_manager.js"; // Loglarda bu modülün ismini görmek için
 
 // Oracle DB Bağlantı Ayarları .env dosyasından geliyor
 const dbConfig = {
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    connectString: process.env.DB_CONNECT_STRING
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  connectString: process.env.DB_CONNECT_STRING,
 };
 
 // readline arayüzünü oluştur
 const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout
+  input: process.stdin,
+  output: process.stdout,
 });
 
 /**
@@ -30,7 +31,7 @@ const rl = readline.createInterface({
  * @returns {string} Üretilen Base64 kodlu API Key.
  */
 function generateApiKey(lengthInBytes = 192) {
-    return crypto.randomBytes(lengthInBytes).toString('base64');
+  return crypto.randomBytes(lengthInBytes).toString("base64");
 }
 
 /**
@@ -39,7 +40,7 @@ function generateApiKey(lengthInBytes = 192) {
  * @returns {string} SHA256 hash'in onaltılık (hex) gösterimi.
  */
 function hashData(data) {
-    return crypto.createHash('sha256').update(data).digest('hex');
+  return crypto.createHash("sha256").update(data).digest("hex");
 }
 
 /**
@@ -47,27 +48,33 @@ function hashData(data) {
  * @returns {Promise<boolean>} Silme işleminin başarılı olup olmadığı.
  */
 async function deleteAllApiKeys() {
-    let connection;
-    try {
-        connection = await db.getConnSimple(dbConfig); // db.js'deki fonksiyonu kullan
-        const result = await connection.execute(
-            `DELETE FROM MASS_API_KEYS` // Tablo adı güncellendi [cite: 318]
-            , {} // autoCommit true olduğu için { autoCommit: true } kaldırdım
-        );
-        mLib.log(`Veritabanından ${result.rowsAffected} adet mevcut MASS_API_KEYS silindi.`);
-        return true;
-    } catch (err) {
-        mLib.error('Mevcut MASS_API_KEYS silerken hata oluştu:', err);
-        return false;
-    } finally {
-        if (connection) {
-            try {
-                await connection.close();
-            } catch (err) {
-                mLib.error('Veritabanı bağlantısı kapatılırken hata:', err);
-            }
-        }
+  let connection;
+  try {
+    connection = await db.getConnSimple(dbConfig); // db.js'deki fonksiyonu kullan
+    const result = await connection.execute(
+      `DELETE FROM MASS_API_KEYS`, // Tablo adı güncellendi [cite: 318]
+      {} // autoCommit true olduğu için { autoCommit: true } kaldırdım
+    );
+    logger.info(
+      `Veritabanından ${result.rowsAffected} adet mevcut MASS_API_KEYS silindi.`
+    );
+    return true;
+  } catch (err) {
+    logger.error("Mevcut MASS_API_KEYS silerken hata oluştu.", {
+      errorMessage: err,
+    });
+    return false;
+  } finally {
+    if (connection) {
+      try {
+        await connection.close();
+      } catch (err) {
+        logger.error("Veritabanı bağlantısı kapatılırken hata.", {
+          errorMessage: err,
+        });
+      }
     }
+  }
 }
 
 /**
@@ -77,35 +84,40 @@ async function deleteAllApiKeys() {
  * @returns {Promise<boolean>} İşlemin başarılı olup olmadığı.
  */
 async function saveApiKeyToDb(apiKey, description) {
-    let connection;
-    try {
-        const hashedApiKey = hashData(apiKey);
-        connection = await db.getConnSimple(dbConfig); // db.js'deki fonksiyonu kullan
+  let connection;
+  try {
+    const hashedApiKey = hashData(apiKey);
+    connection = await db.getConnSimple(dbConfig); // db.js'deki fonksiyonu kullan
 
-        const result = await connection.execute(
-            `INSERT INTO MASS_API_KEYS (HASHED_API_KEY, DESCRIPTION, CREATED_AT, IS_ACTIVE) ` + // Tablo adı güncellendi [cite: 318]
-            `VALUES (:hashedApiKey, :description, SYSTIMESTAMP, 1)`,
-            {
-                hashedApiKey: hashedApiKey,
-                description: description
-            }
-        ); // autoCommit true olduğu için { autoCommit: true } kaldırdım
+    const result = await connection.execute(
+      `INSERT INTO MASS_API_KEYS (HASHED_API_KEY, DESCRIPTION, CREATED_AT, IS_ACTIVE) ` + // Tablo adı güncellendi [cite: 318]
+        `VALUES (:hashedApiKey, :description, SYSTIMESTAMP, 1)`,
+      {
+        hashedApiKey: hashedApiKey,
+        description: description,
+      }
+    ); // autoCommit true olduğu için { autoCommit: true } kaldırdım
 
-        mLib.log(`API Key hash veritabanına kaydedildi. Eklenen satır sayısı: ${result.rowsAffected}`);
-        return result.rowsAffected === 1;
-
-    } catch (err) {
-        mLib.error('Veritabanına API Key kaydederken hata oluştu:', err);
-        return false;
-    } finally {
-        if (connection) {
-            try {
-                await connection.close();
-            } catch (err) {
-                mLib.error('Veritabanı bağlantısı kapatılırken hata:', err);
-            }
-        }
+    logger.info(
+      `API Key hash veritabanına kaydedildi. Eklenen satır sayısı: ${result.rowsAffected}`
+    );
+    return result.rowsAffected === 1;
+  } catch (err) {
+    logger.error("Veritabanına API Key kaydederken hata oluştu.", {
+      errorMessage: err,
+    });
+    return false;
+  } finally {
+    if (connection) {
+      try {
+        await connection.close();
+      } catch (err) {
+        logger.error("Veritabanı bağlantısı kapatılırken hata.", {
+          errorMessage: err,
+        });
+      }
     }
+  }
 }
 
 /**
@@ -115,44 +127,50 @@ async function saveApiKeyToDb(apiKey, description) {
  * @param {number} count Üretilecek API Key adedi.
  */
 async function generateAndSaveApiKeys(count) {
-    // Uyarı mesajı ver ve onay al
-    const answer = await new Promise(resolve => {
-        rl.question(`\n!!!! DİKKAT !!!!\nMevcut tüm API Keyler silinecek ve yeni keyler oluşturulacaktır. Bu işlem geri alınamaz.\nDevam etmek istiyor musunuz? (evet/hayır): `, (ans) => {
-            resolve(ans.toLowerCase());
-        });
-    });
+  // Uyarı mesajı ver ve onay al
+  const answer = await new Promise((resolve) => {
+    rl.question(
+      `\n!!!! DİKKAT !!!!\nMevcut tüm API Keyler silinecek ve yeni keyler oluşturulacaktır. Bu işlem geri alınamaz.\nDevam etmek istiyor musunuz? (evet/hayır): `,
+      (ans) => {
+        resolve(ans.toLowerCase());
+      }
+    );
+  });
 
-    if (answer !== 'evet') {
-        mLib.log('\nİşlem iptal edildi.');
-        rl.close();
-        return;
+  if (answer !== "evet") {
+    logger.info(`İşlem iptal edildi.`);
+    rl.close();
+    return;
+  }
+
+  // Onay alındı, mevcut keyleri sil
+  const deleteSuccess = await deleteAllApiKeys();
+  if (!deleteSuccess) {
+    logger.error(
+      "API Keyler silinirken kritik bir hata oluştu. Yeni keyler oluşturulmayacak."
+    );
+    rl.close();
+    return;
+  }
+  logger.info(
+    `${count} adet yeni API Key üretiliyor ve veritabanına kaydediliyor...`
+  );
+  for (let i = 0; i < count; i++) {
+    const newApiKey = generateApiKey();
+    const description = `EPİAŞ Entegrasyon Key ${i + 1}`;
+    const success = await saveApiKeyToDb(newApiKey, description);
+
+    if (success) {
+      // Ham API Key'i konsola yazdır, bu key elden EPİAŞ'a teslim edilecek. [cite: 74]
+      // Üretim ortamında bu çıktıya dikkat et, loglara düşmemeli!
+      console.log(`Ham API Key (${description}): ${newApiKey}`);
+    } else {
+      logger.error(`API Key ${description} üretilemedi veya kaydedilemedi.`);
     }
-
-    // Onay alındı, mevcut keyleri sil
-    const deleteSuccess = await deleteAllApiKeys();
-    if (!deleteSuccess) {
-        mLib.error('API Keyler silinirken kritik bir hata oluştu. Yeni keyler oluşturulmayacak.');
-        rl.close();
-        return;
-    }
-
-    mLib.log(`\n${count} adet yeni API Key üretiliyor ve veritabanına kaydediliyor...\n`);
-    for (let i = 0; i < count; i++) {
-        const newApiKey = generateApiKey();
-        const description = `EPİAŞ Entegrasyon Key ${i + 1}`;
-        const success = await saveApiKeyToDb(newApiKey, description);
-
-        if (success) {
-            // Ham API Key'i konsola yazdır, bu key elden EPİAŞ'a teslim edilecek. [cite: 74]
-            // Üretim ortamında bu çıktıya dikkat et, loglara düşmemeli!
-            console.log(`Ham API Key (${description}): ${newApiKey}`);
-        } else {
-            mLib.error(`API Key ${description} üretilemedi veya kaydedilemedi.`);
-        }
-    }
-    mLib.log(`\nToplam ${count} adet API Key işlemi tamamlandı.`);
-    mLib.log('Bu ham keyleri yetkili kişi aracılığıyla elden EPİAŞ\'a teslim etmeyi unutmayın abijim!'); //[cite: 74]
-    rl.close(); // readline arayüzünü kapat
+  }
+  logger.info(`Toplam ${count} adet API Key işlemi tamamlandı.`);
+  logger.info("Bu ham keyleri yetkili kişi aracılığıyla elden EPİAŞ'a teslim etmeyi unutmayın abijim!"); //[cite: 74]
+  rl.close(); // readline arayüzünü kapat
 }
 
 // Örnek Kullanım: 32 adet API Key üretip kaydet

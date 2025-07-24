@@ -1,7 +1,7 @@
 const { v4: uuidv4 } = require("uuid");
 const xml2js = require("xml2js");
 const logger = require("../utils/logger");
-const ccbService = require("../services/ccbService");
+const ccbService = require("../services/subscriptionCcbService");
 const subscriptionService = require("../services/subscriptionService");
 
 const xmlParser = new xml2js.Parser({
@@ -9,25 +9,43 @@ const xmlParser = new xml2js.Parser({
   ignoreAttrs: true,
 });
 
-//7.4 POST /subscription/check
-exports.checkSubscription = async (req, res) => {
-  const correlationId = req.headers["x-correlation-id"] || uuidv4();
-  logger.info("[POST /subscription/check] Talep alındı.", { correlationId });
-  const spanId = "(MassRead)" + uuidv4();
 
+function generateTracing(req, label = "MassRead-Subscription") {
+  return {
+    correlationId: req.headers["x-correlation-id"] || uuidv4(),
+    requestId: req.headers["x-request-id"] || uuidv4(),
+    spanIds: `(${label})-${uuidv4()}`,
+  };
+}
+
+function logContext(event, tracing, extra = {}) {
+  return {
+    event,
+    ...tracing,
+    ...extra,
+  };
+}
+
+// POST /subscription/check CCB
+exports.checkSubscription = async (req, res) => {
+  const tracing = generateTracing(req);
+  const { requestId, ...safeTracing } = tracing;
+  const event = "POST /subscription/check";
   const { installationNumber, type, tckn, vkn } = req.body;
 
+  logger.info(
+    "Abonelik kontrol isteği alındı",
+    logContext(event, tracing, { installationNumber, type, tckn, vkn })
+  );
+
   if (!installationNumber || !type || (!tckn && !vkn)) {
-    logger.warn("[POST /subscription/check] Geçersiz istek. Eksik parametre.", {
-      correlationId,
-    });
+    logger.warn("Eksik parametre", logContext(event, tracing));
     return res.sendResponse({
       status: 422,
-      spanIds: spanId,
-      correlationId,
+      ...safeTracing,
       errors: [
         {
-          errorCode: "(EDAS)validation-422",
+          errorCode: "(MassRead)validation-422",
           errorMessage:
             "Eksik parametreler: installationNumber, type ve (tckn veya vkn) zorunludur.",
         },
@@ -36,128 +54,115 @@ exports.checkSubscription = async (req, res) => {
   }
 
   try {
-    logger.info("[POST /subscription/check] XML istek hazırlanıyor...", {
-      correlationId,
-      installationNumber,
-      type,
-      tckn,
-      vkn,
-    });
     const xmlRequest = ccbService.buildSubscriptionCheckXml({
       installationNumber,
       type,
       tckn,
       vkn,
     });
-
-    logger.info("[POST /subscription/check] CCB servisi çağrılıyor...", {
-      correlationId,
-    });
-    const ccbRawResponse = await ccbService.callCcb(xmlRequest, correlationId);
-
-    logger.info(
-      "[POST /subscription/check] CCB yanıtı alındı. Parse ediliyor...",
-      { correlationId }
+    const responseXml = await ccbService.callCcb(
+      xmlRequest,
+      tracing.correlationId,
+      "check"
     );
+    const parsed = await ccbService.parseSubscriptionCheckResponse(responseXml);
 
-    const parsed = await ccbService.parseSubscriptionCheckResponse(
-      ccbRawResponse
-    );
-
-    
     if (parsed.valid) {
-      logger.info(
-        "[POST /subscription/check] Abonelik geçerli. DB kaydı başlıyor...",
-        { correlationId }
+      await subscriptionService.saveSubscriptionToDb(
+        {
+          subscriptionKey: parsed.subscriptionKey,
+          installationNumber,
+          type: parsed.type,
+          tckn,
+          vkn,
+          startDate: parsed.startDate,
+        },
+        tracing
       );
 
-      await subscriptionService.saveSubscription({
-        subscriptionKey: responseBody.subscriptionKey,
-        installationNumber,
-        type: responseBody.type,
-        tckn,
-        vkn,
-        startDate: responseBody.startDate,
-      });
-
-      logger.info("[POST /subscription/check] Abonelik başarıyla kaydedildi.", {
-        correlationId,
-      });
+      logger.info(
+        "Abonelik geçerli, kaydedildi",
+        logContext(event, tracing, { subscriptionKey: parsed.subscriptionKey })
+      );
 
       return res.sendResponse({
         status: 200,
-        spanIds: spanId,
-        correlationId,
+        ...safeTracing,
         successMessage: "Abonelik başarıyla doğrulandı.",
         body: {
           valid: true,
-          subscriptionKey: responseBody.subscriptionKey,
-          type: responseBody.type,
-          startDate: responseBody.startDate,
+          subscriptionKey: parsed.subscriptionKey,
+          type: parsed.type,
+          startDate: parsed.startDate,
         },
       });
     } else {
-      logger.warn("[POST /subscription/check] Abonelik doğrulanamadı.", {
-        correlationId,
-      });
+      const statusCode = parsed.responseCode || 404;
+      const errorMsg =
+        {
+          400: "Bilgiler hatalı.",
+          403: "Yetkisiz erişim.",
+          404: "Tesisat bulunamadı.",
+        }[statusCode] || "Abonelik bilgileri doğrulanamadı.";
+      logger.warn(
+        "Abonelik doğrulanamadı",
+        logContext(event, tracing, { statusCode, errorMsg })
+      );
 
       return res.sendResponse({
-        status: 404,
-        spanIds: spanId,
-        correlationId,
+        status: statusCode,
+        ...safeTracing,
         errors: [
           {
-            errorCode: "(EDAS)subscription-404",
-            errorMessage: "Abonelik bilgileri doğrulanamadı.",
+            errorCode: `(MassRead)subscription-${statusCode}`,
+            errorMessage: errorMsg,
           },
         ],
-        body: {
-          valid: false,
-        },
+        body: { valid: false },
       });
     }
   } catch (err) {
-    logger.error("[POST /subscription/check] Hata", {
-      correlationId,
-      errorMessage: err.message,
-    });
-
+    logger.error(
+      "Abonelik kontrolü hatası",
+      logContext(event, tracing, {
+        errorMessage: err.message,
+        stack: err.stack,
+        response: err.response?.data,
+        status: err.response?.status,
+      })
+    );
     return res.sendResponse({
       status: 500,
-      spanIds: spanId,
-      correlationId,
+      ...safeTracing,
       errors: [
         {
-          errorCode: "(EDAS)internal-error",
-          errorMessage: err.message || "Bilinmeyen hata",
+          errorCode: "(MassRead)internal-error",
+          errorMessage: err.message || "Bilinmeyen hata oluştu",
         },
       ],
     });
   }
 };
 
-//7.5 GET /subscription/{subscriptionKey}
+//GET /subscription/{subscriptionKey} CCB
 exports.getSubscriptionDetails = async (req, res) => {
-  const correlationId = req.headers["x-correlation-id"] || uuidv4();
-  const requestId = req.headers["x-request-id"] || uuidv4();
-  const spanId = "(MassRead)" + uuidv4();
-
+  const tracing = generateTracing(req);
+  const event = "GET /subscription/:subscriptionKey";
   const subscriptionKey = req.params.subscriptionKey;
 
-  logger.info("[GET /subscription/:subscriptionKey] İstek alındı", {
-    correlationId,
-    requestId,
-    subscriptionKey,
-  });
+  logger.info(
+    "Abonelik detay sorgusu alındı",
+    logContext(event, tracing, { subscriptionKey })
+  );
 
   if (!subscriptionKey) {
+    logger.warn("Eksik subscriptionKey", logContext(event, tracing));
     return res.sendResponse({
       status: 422,
-      spanIds: spanId,
-      correlationId,
+      ...safeTracing,
       errors: [
         {
-          errorCode: "(EDAS)validation-422",
+          errorCode: "(MassRead)validation-422",
           errorMessage: "subscriptionKey parametresi zorunludur.",
         },
       ],
@@ -165,24 +170,22 @@ exports.getSubscriptionDetails = async (req, res) => {
   }
 
   try {
-    logger.info("[GET /subscription/:subscriptionKey] XML oluşturuluyor", {
-      correlationId,
-    });
-
     const xmlRequest = ccbService.buildSubscriptionKeyQueryXml(subscriptionKey);
-
-    const rawXml = await ccbService.callCcb(xmlRequest, correlationId, "key");
-
+    const rawXml = await ccbService.callCcb(
+      xmlRequest,
+      tracing.correlationId,
+      "key"
+    );
     const parsed = await ccbService.parseSubscriptionKeyResponse(rawXml);
 
-    logger.info("[GET /subscription/:subscriptionKey] Yanıt parse edildi", {
-      correlationId,
-    });
+    await subscriptionService.updateSubscriptionDetails(
+      { subscriptionKey, ...parsed },
+      tracing
+    );
 
     return res.sendResponse({
       status: 200,
-      spanIds: spanId,
-      correlationId,
+      ...safeTracing,
       body: {
         subscriptionDetails: {
           startDate: parsed.startDate,
@@ -203,18 +206,93 @@ exports.getSubscriptionDetails = async (req, res) => {
       },
     });
   } catch (err) {
-    logger.error("[GET /subscription/:subscriptionKey] Hata oluştu", {
-      correlationId,
-      errorMessage: err.message,
+    logger.error(
+      "Detay sorgusu hatası",
+      logContext(event, tracing, {
+        errorMessage: err.message,
+        stack: err.stack,
+        response: err.response?.data,
+        status: err.response?.status,
+      })
+    );
+    return res.sendResponse({
+      status: 404,
+      ...safeTracing,
+      errors: [
+        {
+          errorCode: "(MassRead)subscription-404",
+          errorMessage: "Abonelik detayı bulunamadı veya silinmiş.",
+        },
+      ],
     });
+  }
+};
+
+//GET /subscription/:subscriptionKey/reported-outages
+exports.getReportedOutages = async (req, res) => {
+  const tracing = generateTracing(req);
+  const event = "GET /subscription/:subscriptionKey/reported-outages";
+  const { subscriptionKey } = req.params;
+  const { start, end } = req.query;
+  const { requestId, ...safeTracing } = tracing;
+
+  logger.info(
+    "Kesinti ve Tazminat Bilgisi sorgu isteği alındı",
+    logContext(event, tracing, { subscriptionKey, start, end })
+  );
+
+  if (!subscriptionKey || !start || !end) {
+    logger.warn("Eksik parametre", logContext(event, tracing));
+    return res.sendResponse({
+      status: 422,
+      ...safeTracing,
+      errors: [
+        {
+          errorCode: "(MassRead)validation-422",
+          errorMessage:
+            "subscriptionKey, start ve end parametreleri zorunludur.",
+        },
+      ],
+    });
+  }
+
+  try {
+    const data = await subscriptionService.getReportedOutages(
+      subscriptionKey,
+      start,
+      end,
+      tracing
+    );
+
+    logger.info(
+      "Kesinti ve Tazminat Bilgisi sorgusu başarıyla tamamlandı",
+      logContext(event, tracing, {
+        resultCount: Array.isArray(data?.outages) ? data.outages.length : 0,
+      })
+    );
+
+    return res.sendResponse({
+      status: 200,
+      ...safeTracing,
+      body: data,
+    });
+  } catch (err) {
+    logger.error(
+      "Kesinti ve Tazminat Bilgisi sorgusu sırasında hata oluştu",
+      logContext(event, tracing, {
+        errorMessage: err.message,
+        stack: err.stack,
+        response: err.response?.data,
+        status: err.response?.status,
+      })
+    );
 
     return res.sendResponse({
       status: 500,
-      spanIds: spanId,
-      correlationId,
+      ...safeTracing,
       errors: [
         {
-          errorCode: "(EDAS)ccb-error",
+          errorCode: "(MassRead)internal-error",
           errorMessage: err.message || "Bilinmeyen hata",
         },
       ],
@@ -222,225 +300,530 @@ exports.getSubscriptionDetails = async (req, res) => {
   }
 };
 
-//7.8 PUT /subscription/{subscriptionKey}/usage-limit-threshold
+//PUT /subscription/:subscriptionKey/usage-limit-threshold CCB
 exports.updateUsageLimitThreshold = async (req, res) => {
-  const correlationId = req.headers["x-correlation-id"] || uuidv4();
-  const spanId = "(MassRead)" + uuidv4();
-  const subscriptionKey = req.params.subscriptionKey;
+  const tracing = generateTracing(req);
+  const event = "PUT /subscription/:subscriptionKey/usage-limit-threshold";
+  const { subscriptionKey } = req.params;
   const { threshold } = req.body;
 
-  logger.info("[PUT /subscription/:subscriptionKey/usage-limit-threshold] İstek alındı", {
-    correlationId,
-    subscriptionKey,
-    threshold
-  });
+  logger.info(
+    "Kullanım eşiği güncelleme isteği",
+    logContext(event, tracing, { subscriptionKey, threshold })
+  );
 
   if (!subscriptionKey || typeof threshold !== "number") {
+    logger.warn("Eksik veya hatalı parametre", logContext(event, tracing));
     return res.sendResponse({
       status: 422,
-      spanIds: spanId,
-      correlationId,
+      ...safeTracing,
       errors: [
         {
-          errorCode: "(EDAS)validation-422",
-          errorMessage: "subscriptionKey ve numeric threshold zorunludur."
-        }
-      ]
+          errorCode: "(MassRead)validation-422",
+          errorMessage: "subscriptionKey ve numeric threshold zorunludur.",
+        },
+      ],
     });
   }
 
   try {
-    const requestXml = ccbService.buildUsageLimitThresholdXml(subscriptionKey, threshold);
-    const responseXml = await ccbService.callCcb(requestXml, correlationId, "key");
-    const result = await ccbService.parseUsageLimitThresholdResponse(responseXml);
+    const xml = ccbService.buildUsageLimitThresholdXml(
+      subscriptionKey,
+      threshold
+    );
+    const response = await ccbService.callCcb(
+      xml,
+      tracing.correlationId,
+      "usageLimit"
+    );
+    const result = await ccbService.parseUsageLimitThresholdResponse(response);
 
     if (result.status === "success" && result.responseCode === "200") {
-      logger.info("[PUT /usage-limit-threshold] Eşik başarıyla güncellendi", { correlationId });
-
+      await subscriptionService.updateUsageLimitInDb(
+        subscriptionKey,
+        threshold,
+        tracing
+      );
+      logger.info("Eşik başarıyla güncellendi", logContext(event, tracing));
       return res.sendResponse({
         status: 200,
-        spanIds: spanId,
-        correlationId,
+        ...safeTracing,
         successMessage: "Eşik değer başarıyla güncellendi.",
-        body: { status: "success" }
+        body: { status: "success" },
       });
     } else {
-      logger.warn("[PUT /usage-limit-threshold] CCB'den olumsuz yanıt alındı", { correlationId });
-
+      logger.warn(
+        "CCB'den olumsuz yanıt alındı",
+        logContext(event, tracing, result)
+      );
       return res.sendResponse({
         status: 500,
-        spanIds: spanId,
-        correlationId,
+        ...safeTracing,
         errors: [
           {
-            errorCode: "(EDAS)ccb-failed",
-            errorMessage: "Threshold güncellemesi başarısız oldu."
-          }
-        ]
+            errorCode: "(MassRead)ccb-failed",
+            errorMessage: "Threshold güncellemesi başarısız oldu.",
+          },
+        ],
       });
     }
   } catch (err) {
-    logger.error("[PUT /usage-limit-threshold] Hata", {
-      correlationId,
-      errorMessage: err.message
-    });
-
+    logger.error(
+      "Threshold güncelleme hatası",
+      logContext(event, tracing, {
+        errorMessage: err.message,
+        stack: err.stack,
+        response: err.response?.data,
+        status: err.response?.status,
+      })
+    );
     return res.sendResponse({
       status: 500,
-      spanIds: spanId,
-      correlationId,
+      ...safeTracing,
       errors: [
         {
-          errorCode: "(EDAS)internal-error",
-          errorMessage: err.message || "Bilinmeyen hata"
-        }
-      ]
+          errorCode: "(MassRead)internal-error",
+          errorMessage: err.message || "Bilinmeyen hata",
+        },
+      ],
     });
   }
 };
 
-//7.9 PUT /subscription/{subscriptionKey}/unexpected-usage-threshold
+//PUT /subscription/:subscriptionKey/unexpected-usage-threshold CCB
 exports.updateUnexpectedUsageThreshold = async (req, res) => {
-  const correlationId = req.headers["x-correlation-id"] || uuidv4();
-  const spanId = "(MassRead)" + uuidv4();
-  const subscriptionKey = req.params.subscriptionKey;
+  const tracing = generateTracing(req);
+  const event = "PUT /subscription/:subscriptionKey/unexpected-usage-threshold";
+  const { subscriptionKey } = req.params;
   const { threshold } = req.body;
 
-  logger.info("[PUT /subscription/:subscriptionKey/unexpected-usage-threshold] İstek alındı", {
-    correlationId,
-    subscriptionKey,
-    threshold
-  });
+  logger.info(
+    "Beklenmedik kullanım eşiği güncelleme isteği",
+    logContext(event, tracing, { subscriptionKey, threshold })
+  );
 
   if (!subscriptionKey || typeof threshold !== "number") {
+    logger.warn("Eksik veya hatalı parametre", logContext(event, tracing));
     return res.sendResponse({
       status: 422,
-      spanIds: spanId,
-      correlationId,
+      ...safeTracing,
       errors: [
         {
-          errorCode: "(EDAS)validation-422",
-          errorMessage: "subscriptionKey ve numeric threshold zorunludur."
-        }
-      ]
+          errorCode: "(MassRead)validation-422",
+          errorMessage: "subscriptionKey ve numeric threshold zorunludur.",
+        },
+      ],
     });
   }
 
   try {
-    const requestXml = ccbService.buildUnexpectedUsageThresholdXml(subscriptionKey, threshold);
-    const responseXml = await ccbService.callCcb(requestXml, correlationId, "key");
-    const result = await ccbService.parseUnexpectedUsageThresholdResponse(responseXml);
+    const xml = ccbService.buildUnexpectedUsageThresholdXml(
+      subscriptionKey,
+      threshold
+    );
+    const response = await ccbService.callCcb(
+      xml,
+      tracing.correlationId,
+      "unexpectedUsage"
+    );
+    const result = await ccbService.parseUnexpectedUsageThresholdResponse(
+      response
+    );
 
     if (result.status === "success" && result.responseCode === "200") {
-      logger.info("[PUT /unexpected-usage-threshold] Eşik başarıyla güncellendi", { correlationId });
-
+      await subscriptionService.updateUnexpectedUsageInDb(
+        subscriptionKey,
+        threshold,
+        tracing
+      );
+      logger.info(
+        "Beklenmedik eşik başarıyla güncellendi",
+        logContext(event, tracing)
+      );
       return res.sendResponse({
         status: 200,
-        spanIds: spanId,
-        correlationId,
+        ...safeTracing,
         successMessage: "Eşik değer başarıyla güncellendi.",
-        body: { status: "success" }
+        body: { status: "success" },
       });
     } else {
-      logger.warn("[PUT /unexpected-usage-threshold] CCB olumsuz yanıt", { correlationId });
-
+      logger.warn(
+        "CCB olumsuz yanıt verdi",
+        logContext(event, tracing, result)
+      );
       return res.sendResponse({
         status: 500,
-        spanIds: spanId,
-        correlationId,
+        ...safeTracing,
         errors: [
           {
-            errorCode: "(EDAS)ccb-failed",
-            errorMessage: "Beklenmedik tüketim eşiği güncellemesi başarısız."
-          }
-        ]
+            errorCode: "(MassRead)ccb-failed",
+            errorMessage: "Beklenmedik tüketim eşiği güncellemesi başarısız.",
+          },
+        ],
       });
     }
   } catch (err) {
-    logger.error("[PUT /unexpected-usage-threshold] Hata", {
-      correlationId,
-      errorMessage: err.message
-    });
+    logger.error(
+      "Eşik güncelleme hatası",
+      logContext(event, tracing, {
+        errorMessage: err.message,
+        stack: err.stack,
+        response: err.response?.data,
+        status: err.response?.status,
+      })
+    );
 
     return res.sendResponse({
       status: 500,
-      spanIds: spanId,
-      correlationId,
+      ...safeTracing,
       errors: [
         {
-          errorCode: "(EDAS)internal-error",
-          errorMessage: err.message || "Bilinmeyen hata"
-        }
-      ]
+          errorCode: "(MassRead)internal-error",
+          errorMessage: err.message || "Bilinmeyen hata",
+        },
+      ],
     });
   }
 };
 
-//7.10 DELETE /subscription/{subscriptionKey}
-exports.deleteSubscription = async (req, res) => {
-  const correlationId = req.headers["x-correlation-id"] || uuidv4();
-  const spanId = "(MassRead)" + uuidv4();
-  const subscriptionKey = req.params.subscriptionKey;
+//GET /subscription/{subscriptionKey}/readings
+exports.getReadings = async (req, res) => {
+  const tracing = generateTracing(req);
+  const event = "GET /subscription/:subscriptionKey/readings";
+  const { subscriptionKey } = req.params;
 
-  logger.info("[DELETE /subscription/:subscriptionKey] İstek alındı", {
-    correlationId,
-    subscriptionKey
-  });
+  logger.info(
+    "Tüketim verileri sorgusu alındı",
+    logContext(event, tracing, { subscriptionKey })
+  );
 
   if (!subscriptionKey) {
+    logger.warn("Eksik subscriptionKey", logContext(event, tracing));
     return res.sendResponse({
       status: 422,
-      spanIds: spanId,
-      correlationId,
-      errors: [{
-        errorCode: "(EDAS)validation-422",
-        errorMessage: "subscriptionKey parametresi zorunludur."
-      }]
+      ...safeTracing,
+      errors: [
+        {
+          errorCode: "(MassRead)validation-422",
+          errorMessage: "subscriptionKey parametresi zorunludur.",
+        },
+      ],
     });
   }
 
   try {
-    const requestXml = ccbService.buildSubscriptionDeleteXml(subscriptionKey);
-    const responseXml = await ccbService.callCcb(requestXml, correlationId, "key");
-    const result = await ccbService.parseSubscriptionDeleteResponse(responseXml);
+    const data = await subscriptionService.getReadings(
+      subscriptionKey,
+      tracing
+    );
 
-    if (result.status === "success" && result.responseCode === "200") {
-      logger.info("[DELETE /subscription] Abonelik başarıyla silindi", { correlationId });
+    logger.info(
+      "Tüketim verileri başarıyla alındı",
+      logContext(event, tracing, {
+        resultCount: data?.readings?.length || 0,
+      })
+    );
 
-      return res.sendResponse({
-        status: 200,
-        spanIds: spanId,
-        correlationId,
-        successMessage: "Abonelik başarıyla silindi.",
-        body: { status: "success" }
-      });
-    } else {
-      logger.warn("[DELETE /subscription] CCB'den başarısız yanıt", { correlationId });
-
-      return res.sendResponse({
-        status: 500,
-        spanIds: spanId,
-        correlationId,
-        errors: [{
-          errorCode: "(EDAS)ccb-failed",
-          errorMessage: "Abonelik silinemedi."
-        }]
-      });
-    }
-  } catch (err) {
-    logger.error("[DELETE /subscription] Hata", {
-      correlationId,
-      errorMessage: err.message
+    return res.sendResponse({
+      status: 200,
+      ...safeTracing,
+      body: data,
     });
+  } catch (err) {
+    logger.error(
+      "Tüketim verileri alınırken hata oluştu",
+      logContext(event, tracing, {
+        errorMessage: err.message,
+        stack: err.stack,
+        response: err.response?.data,
+        status: err.response?.status,
+      })
+    );
 
     return res.sendResponse({
       status: 500,
-      spanIds: spanId,
-      correlationId,
-      errors: [{
-        errorCode: "(EDAS)internal-error",
-        errorMessage: err.message || "Bilinmeyen hata"
-      }]
+      ...safeTracing,
+      errors: [
+        {
+          errorCode: "(MassRead)internal-error",
+          errorMessage: err.message || "Tüketim verisi alınamadı.",
+        },
+      ],
+    });
+  }
+};
+
+//GET /subscription/{subscriptionKey}/outages
+exports.getOutages = async (req, res) => {
+  const tracing = generateTracing(req);
+  const { requestId, ...safeTracing } = tracing;
+  const event = "GET /subscription/:subscriptionKey/outages";
+  const { subscriptionKey } = req.params;
+  const { start, end } = req.query;
+
+  logger.info(
+    "Kesinti verisi sorgusu alındı",
+    logContext(event, tracing, { subscriptionKey, start, end })
+  );
+
+  if (!subscriptionKey || !start || !end) {
+    return res.sendResponse({
+      status: 422,
+      ...safeTracing,
+      errors: [
+        {
+          errorCode: "(MassRead)validation-422",
+          errorMessage:
+            "subscriptionKey, start ve end parametreleri zorunludur.",
+        },
+      ],
+    });
+  }
+
+  try {
+    const result = await subscriptionService.getOutages(
+      subscriptionKey,
+      start,
+      end,
+      tracing
+    );
+
+    return res.sendResponse({
+      status: 200,
+      ...safeTracing,
+      body: result,
+    });
+  } catch (err) {
+    logger.error(
+      "Kesinti verisi sorgusu hatası",
+      logContext(event, tracing, {
+        errorMessage: err.message,
+        stack: err.stack,
+        response: err.response?.data,
+        status: err.response?.status,
+      })
+    );
+    return res.sendResponse({
+      status: 500,
+      ...safeTracing,
+      errors: [
+        {
+          errorCode: "(MassRead)internal-error",
+          errorMessage: err.message || "Beklenmeyen bir hata oluştu.",
+        },
+      ],
+    });
+  }
+};
+
+//GET /subscription/{subscriptionKey}/compensation/yearly
+exports.getYearlyCompensations = async (req, res) => {
+  const tracing = generateTracing(req);
+  const event = "GET /subscription/:subscriptionKey/compensation/yearly";
+  const { subscriptionKey } = req.params;
+  const { start, end } = req.query;
+
+  logger.info(
+    "Yıllık tazminat sorgusu alındı",
+    logContext(event, tracing, { subscriptionKey, start, end })
+  );
+
+  if (!subscriptionKey || !start || !end) {
+    return res.sendResponse({
+      status: 422,
+      ...safeTracing,
+      errors: [
+        {
+          errorCode: "(MassRead)validation-422",
+          errorMessage: "subscriptionKey, start ve end zorunludur.",
+        },
+      ],
+    });
+  }
+
+  try {
+    const data = await subscriptionService.getYearlyCompensation(
+      subscriptionKey,
+      start,
+      end,
+      tracing
+    );
+
+    return res.sendResponse({
+      status: 200,
+      ...safeTracing,
+      body: data,
+    });
+  } catch (err) {
+    logger.error(
+      "Yıllık tazminat verisi alınamadı",
+      logContext(event, tracing, {
+        errorMessage: err.message,
+        stack: err.stack,
+        response: err.response?.data,
+        status: err.response?.status,
+      })
+    );
+
+    return res.sendResponse({
+      status: 500,
+      ...safeTracing,
+      errors: [
+        {
+          errorCode: "(MassRead)internal-error",
+          errorMessage: err.message || "Yıllık tazminat verisi alınamadı.",
+        },
+      ],
+    });
+  }
+};
+
+//GET /subscription/{subscriptionKey}/compensation/extended
+exports.getExtendedCompensations = async (req, res) => {
+  const tracing = generateTracing(req);
+  const event = "GET /subscription/:subscriptionKey/compensation/extended";
+  const { subscriptionKey } = req.params;
+  const { start, end } = req.query;
+
+  logger.info(
+    "Genişletilmiş tazminat sorgusu alındı",
+    logContext(event, tracing, { subscriptionKey, start, end })
+  );
+
+  if (!subscriptionKey || !start || !end) {
+    return res.sendResponse({
+      status: 422,
+      ...safeTracing,
+      errors: [
+        {
+          errorCode: "(MassRead)validation-422",
+          errorMessage: "subscriptionKey, start ve end zorunludur.",
+        },
+      ],
+    });
+  }
+
+  try {
+    const data = await subscriptionService.getExtendedCompensation(
+      subscriptionKey,
+      start,
+      end,
+      tracing
+    );
+
+    return res.sendResponse({
+      status: 200,
+      ...safeTracing,
+      body: data,
+    });
+  } catch (err) {
+    logger.error(
+      "Genişletilmiş tazminat verisi alınamadı",
+      logContext(event, tracing, {
+        errorMessage: err.message,
+        stack: err.stack,
+        response: err.response?.data,
+        status: err.response?.status,
+      })
+    );
+
+    return res.sendResponse({
+      status: 500,
+      ...safeTracing,
+      errors: [
+        {
+          errorCode: "(MassRead)internal-error",
+          errorMessage:
+            err.message || "Genişletilmiş tazminat verisi alınamadı.",
+        },
+      ],
+    });
+  }
+};
+
+//DELETE /subscription/:subscriptionKey
+exports.deleteSubscription = async (req, res) => {
+  const tracing = generateTracing(req);
+  const event = "DELETE /subscription/:subscriptionKey";
+  const { subscriptionKey } = req.params.subscriptionKey;
+
+  logger.info(
+    "Abonelik silme isteği alındı",
+    logContext(event, tracing, { subscriptionKey })
+  );
+
+  if (!subscriptionKey) {
+    logger.warn("Eksik subscriptionKey", logContext(event, tracing));
+    return res.sendResponse({
+      status: 422,
+      ...safeTracing,
+      errors: [
+        {
+          errorCode: "(MassRead)validation-422",
+          errorMessage: "subscriptionKey parametresi zorunludur.",
+        },
+      ],
+    });
+  }
+
+  try {
+    const xml = ccbService.buildSubscriptionDeleteXml(subscriptionKey);
+    const response = await ccbService.callCcb(
+      xml,
+      tracing.correlationId,
+      "delete"
+    );
+    const result = await ccbService.parseSubscriptionDeleteResponse(response);
+
+    if (result.status === "success" && result.responseCode === "200") {
+      await subscriptionService.deactivateSubscription(
+        subscriptionKey,
+        tracing
+      );
+      logger.info("Abonelik başarıyla silindi", logContext(event, tracing));
+
+      return res.sendResponse({
+        status: 200,
+        ...safeTracing,
+        successMessage: "Abonelik başarıyla silindi.",
+        body: { status: "success" },
+      });
+    } else {
+      logger.warn(
+        "CCB'den başarısız yanıt",
+        logContext(event, tracing, result)
+      );
+      return res.sendResponse({
+        status: 500,
+        ...safeTracing,
+        errors: [
+          {
+            errorCode: "(MassRead)ccb-failed",
+            errorMessage: "Abonelik silinemedi.",
+          },
+        ],
+      });
+    }
+  } catch (err) {
+    logger.error(
+      "Abonelik silme sırasında hata oluştu",
+      logContext(event, tracing, {
+        errorMessage: err.message,
+        stack: err.stack,
+        response: err.response?.data,
+        status: err.response?.status,
+      })
+    );
+
+    return res.sendResponse({
+      status: 500,
+      ...safeTracing,
+      errors: [
+        {
+          errorCode: "(MassRead)internal-error",
+          errorMessage: err.message || "Bilinmeyen hata",
+        },
+      ],
     });
   }
 };
